@@ -18,6 +18,8 @@ from google.auth.transport import requests
 
 app = FastAPI(docs_url=None, redoc_url=None)
 clientId = "761442466271-4e3pel8pnajc5lcv4c4psd1n83mb06os.apps.googleusercontent.com"
+
+#logging
 logger = logging.getLogger("uvicorn.access")
 handler = logging.handlers.RotatingFileHandler("./api.log",mode="a",maxBytes = 10*1024*1024, backupCount = 3)
 
