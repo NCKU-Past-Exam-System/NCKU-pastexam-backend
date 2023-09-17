@@ -1,11 +1,11 @@
 import mysql.connector
-
+import  credentials 
 def get_db_connection():
     connection = mysql.connector.connect(
         host='localhost',
         port=3306,
-        user="root",
-        password="asdfghjkl;'",
+        user=credentials.user,
+        password=credentials.password,
         database="pastexam"
     )
     return connection
