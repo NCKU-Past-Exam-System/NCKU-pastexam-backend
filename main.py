@@ -13,10 +13,8 @@ from google.auth import jwt, exceptions
 from google.oauth2 import id_token
 from google.auth.transport import requests
 
-
-
-
-app = FastAPI(docs_url=None, redoc_url=None)
+# app = FastAPI(docs_url=None, redoc_url=None)
+app = FastAPI()
 clientId = "761442466271-4e3pel8pnajc5lcv4c4psd1n83mb06os.apps.googleusercontent.com"
 
 #logging
@@ -149,15 +147,18 @@ async def upload_file( request: Request, file:UploadFile ,year: int = 0, examtyp
     path = f"./static/{course_id}/{file.filename}"
     if os.path.exists(path) :
         return {"status":"error","message": "File already exist! Please rename file!"}
+        
     content = file.file.read()
     fout = open(path, 'wb')
     fout.write(content)
     fout.close()
     db = get_db_connection()
     db_cursor = db.cursor()
-    query = f"INSERT INTO `pastexam`.`files` (`course_id`, `teacher`, `year`, `type`, `filename`,`uploader`) VALUES ('{course_id}', '{teacher}', '{year}', '{examtype}', '{file.filename}','{userinfo.get('given_name')}');"
-    db_cursor.execute(query)
+    query = "INSERT INTO files (course_id, teacher, year, type, filename, uploader) VALUES (%s, %s, %s, %s, %s, %s)"
+
+    values = (course_id, teacher, year, examtype, file.filename, userinfo.get('given_name'))
+
+    db_cursor.execute(query, values)
+
     db.commit()
     return {"status":"success","message": f"Successfully uploaded {file.filename}"}
-
-
