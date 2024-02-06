@@ -13,11 +13,11 @@ from google.auth import jwt, exceptions
 from google.oauth2 import id_token
 from google.auth.transport import requests
 import hashlib
+import time
 
 # app = FastAPI(docs_url=None, redoc_url=None)
 app = FastAPI()
 clientId = "761442466271-4e3pel8pnajc5lcv4c4psd1n83mb06os.apps.googleusercontent.com"
-
 #logging
 logger = logging.getLogger("uvicorn.access")
 handler = logging.handlers.RotatingFileHandler("./api.log",mode="a",maxBytes = 10*1024*1024, backupCount = 3)
@@ -27,8 +27,8 @@ logging.basicConfig(level=logging.INFO)
 origins = [
     "http://localhost:3000",
     "https://nckucsie-pastexam.owenowenisme.com",
+    "https://nckucsie-pastexam-api.owenowenisme.com",
 ]
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -40,17 +40,13 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 def token_verify(token:str):
     try: 
         userinfo=id_token.verify_oauth2_token(token, requests.Request(), clientId)
-    except exceptions.InvalidValue as e:
-        return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            content = {"message":"Token Expired! Please Relogin!"}
-        )
     except Exception as e:
-        logging.info(e)
-        return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            content = {"message":"Unvalid Login! Please Relogin!"}
-        )
+        return {"status":"error","message":str(e)}
+    
+    if(userinfo.get('hd') != 'gs.ncku.edu.tw'):
+        return  {"status":"error","message":"Please use NCKU email to login!"}
+    
+    userinfo['status'] = 'success'
     return userinfo
 def hasher(course_id:int,teacher:str,year:int,examtype:str,filename:str,username:str):
     hash_input = f"{course_id}_{teacher}_{year}_{examtype}_{username}_{filename}"
@@ -75,7 +71,6 @@ def list_all(course_id:int ,db: cursor = Depends(get_db)):
         return res
     except Exception as e:
         return {"status": "error", "message": str(e)}
-
 @app.get("/courselist")
 async def get_courselist(db: cursor = Depends(get_db),key: str = 'none'):
     handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s -"))
@@ -90,29 +85,22 @@ async def get_courselist(db: cursor = Depends(get_db),key: str = 'none'):
         return r
     else:
         return {"error": "not found"}
-
 @app.get("/file/")
-async def fetchfile(request: Request,hash: str =''):
-    
+async def fetch_file(request: Request,hash: str ='',token: str = Cookie(None)):
+
     if hash == '':
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
             content = {"message":"Please fill in the hash!"}
         )
-    # path=f"./static/{course_id}/{file_name}"
-
-    # oauth_jwt=request.headers.get('token')
     
-    # userinfo=token_verify(oauth_jwt)
-    # forlog= f"{userinfo.get('email')} {userinfo.get('given_name')}"
-    # handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s -"+forlog))
-    # logger.addHandler(handler)
-    # forlog=""
-    # if(userinfo.get('hd') != 'gs.ncku.edu.tw'):
-    #     return JSONResponse(
-    #         status_code=status.HTTP_400_BAD_REQUEST,
-    #         content = {"message":"Please use NCKU email to login!"}
-    #     )
+    userinfo=token_verify(token)
+    if userinfo.get('status') == 'error':
+        return JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content = {"message":'Invalid token'}
+        )
+
     db = get_db_connection()
     db_cursor = db.cursor()
     query = "SELECT * FROM files WHERE hash = %s"
@@ -124,27 +112,32 @@ async def fetchfile(request: Request,hash: str =''):
         return FileResponse(path=path)
     else:
         return result
-
-@app.post("/uploadfile/")
-async def upload_file( request: Request, file:UploadFile ,year: int = 0, examtype : str = '', teacher : str = '', course_id:int=0 ,token: str=''):
-    oauth_jwt=request.headers.get('token')
+@app.post("/file/")
+async def upload_file( request: Request,file:UploadFile ,year: int = 0, examtype : str = '', teacher : str = '', course_id:int=0 ,token: str = Cookie(None)):
     
-    if(oauth_jwt == None):
-        return  {"status":"error","message":"Login first!"}
-
-    userinfo=token_verify(oauth_jwt)
+    userinfo=token_verify(token)
+    if userinfo.get('status') == 'error':
+        return JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content = {"message":'Invalid token'}
+    )
 
 
     forlog= f"{userinfo.get('email')} {userinfo.get('given_name')}"
     handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s -"+forlog))
     logger.addHandler(handler)
 
-    if(userinfo.get('hd') != 'gs.ncku.edu.tw'):
-        return  {"status":"error","message":"Please use NCKU email to login!"}
+
     if course_id==0 or examtype == '' or teacher == '' or year == 0:
-        return {"status":"error","message": "Please fill in every blank!"}
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content = {"message":"Please fill in every blank!"}
+        )
     if file == None:
-        return {"status":"error","message": "Please select a file!"}
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content = {"message":"Please select a file!"}
+        )
     
     path = f"./static/{course_id}/{file.filename}"
     logger.info(path)
@@ -165,8 +158,10 @@ async def upload_file( request: Request, file:UploadFile ,year: int = 0, examtyp
     hashed_filename = hasher(course_id,teacher,year,examtype,file.filename,userinfo.get('given_name'))
     path = f"./static/{course_id}/{hashed_filename}"
     i=1
+    original_filename = '.'.join(file.filename.split('.')[:-1])
+    original_fileext = file.filename.split('.')[-1]
     while os.path.exists(path):
-        file.filename = f"{'.'.join(file.filename.split('(')[:-1])}({i}).{file.filename.split('.')[-1]}"
+        file.filename = f"{original_filename}({i}).{original_fileext}"
         hashed_filename = hasher(course_id,teacher,year,examtype,file.filename,userinfo.get('given_name'))
         path = f"./static/{course_id}/{hashed_filename}"
         i += 1
@@ -176,12 +171,88 @@ async def upload_file( request: Request, file:UploadFile ,year: int = 0, examtyp
     fout = open(path, 'wb')
     fout.write(content)
     fout.close()
-    query = "INSERT INTO files (hash,course_id, teacher, year, type, name, uploader) VALUES (%s, %s, %s, %s, %s, %s, %s)"
-    values = (hashed_filename,course_id, teacher, year, examtype, file.filename.split('_')[-1], userinfo.get('given_name'))
-
+    query = "INSERT INTO files (hash,course_id, teacher, year, type, name, uploader, upload_time) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
+    values = (hashed_filename,course_id, teacher, year, examtype, file.filename.split('_')[-1], userinfo.get('given_name'),int(time.time()))
     db_cursor.execute(query, values)
+    query = "INSERT INTO uploader (hash,uploader_id) VALUES (%s, %s)"
+    db_cursor.execute(query,(hashed_filename,userinfo.get('email').split('@')[0]))
     db.commit()
     return {"status":"success","message": f"Successfully uploaded {file.filename}"}
+@app.delete("/file/")
+async def delete_file(request: Request,hash: str ='',token: str = Cookie(None)):
+    userinfo=token_verify(token)
+    if userinfo.get('status') == 'error':
+        return JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content = {"message":'Invalid token'}
+    )
+    db = get_db_connection()
+    db_cursor = db.cursor()
+    query = "SELECT * FROM files WHERE hash = %s"
+    db_cursor.execute(query, (hash,))
+    result = db_cursor.fetchone()
+    if result:
+        course_id = result[1]
+        query = "SELECT * FROM uploader WHERE hash = %s"
+        db_cursor.execute(query, (hash,))
+        uploader = db_cursor.fetchone()[1]
+        if uploader != userinfo.get('email').split('@')[0]:
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content = {"message":"You are not the uploader of this file!"}
+            )
+        
+        path =f"./static/{course_id}/{hash}"
+        if os.path.exists(path):
+            os.remove(path)
+        query = "DELETE FROM files WHERE hash = %s"
+        db_cursor.execute(query, (hash,))
+        query = "DELETE FROM uploader WHERE hash = %s"
+        db_cursor.execute(query, (hash,))
+        db.commit()
+        return {"status":"success","message": f"Successfully deleted {result[6]}"}
+    else:
+        return {"status":"error","message": result}
+@app.put("/file/")
+async def update_file(request: Request,hash: str ='',year: int = 0, examtype : str = '', teacher : str = '',filename:str = '',token: str = Cookie(None)):
+    userinfo=token_verify(token)
+    if userinfo.get('status') == 'error':
+        return JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content = {"message":'Invalid token'}
+    )
+    if hash == '' or filename == '' or year == 0 or examtype == '' or teacher == '':
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content = {"message":"Please fill the required arguments!"}
+        )
+    if examtype != 'quiz' and examtype != 'midterm' and examtype != 'final' and examtype != 'hw' and examtype != 'others':
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content = {"message":"Invalid examtype!"}
+        )
+    db = get_db_connection()
+    db_cursor = db.cursor()
+    query = "SELECT * FROM files WHERE hash = %s"
+    db_cursor.execute(query, (hash,))
+    result = db_cursor.fetchone()
+    if result:
+        if result[7] != userinfo.get('given_name'):
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content = {"message":"You are not the uploader of this file!"}
+            )
+        if  examtype == '' or teacher == '' or year == 0:
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content = {"message":"Please fill in every blank!"}
+            )
+        query = "UPDATE files SET teacher = %s, year = %s, type = %s, name = %s WHERE hash = %s"
+        db_cursor.execute(query, (teacher, year, examtype, filename,hash))
+        db.commit()
+        return {"status":"success","message": f"Successfully updated {result[6]}"}
+    else:
+        return {"status":"error","message": "File not found!"}
 @app.get("/search/")
 async def search(request: Request, db: cursor = Depends(get_db),uid:int=0 ,course_name: str = '', dept: str = '', instructor: str = ''):
     query = "SELECT * FROM courses WHERE "
@@ -221,4 +292,55 @@ async def search(request: Request, db: cursor = Depends(get_db),uid:int=0 ,cours
         return res  # This will be automatically converted to JSON by FastAPI
     except Exception as e:
         return {"status": "error", "message": str(e)}
+@app.get("/list-files-by-user/")
+async def list_files_by_user(token: str = Cookie(None),db: cursor = Depends(get_db)):
 
+    userinfo=token_verify(token)
+    if userinfo.get('status') == 'error':
+        return JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content = {"message":"Invalid token"}
+    )
+
+    try:
+        query = "SELECT * FROM files WHERE uploader = %s"
+        db.execute(query, (userinfo.get('given_name'),))
+        result = [dict((db.description[i][0], value) for i, value in enumerate(row)) for row in db.fetchall()]
+        for i in result:
+            query = "SELECT * FROM courses WHERE uid = %s"
+            db.execute(query, (i['course_id'],))
+            course = db.fetchone()
+            i['course_name'] = course[4]
+            i['sem']=course[3].split('-')[1]
+        res = {}
+        logger.info(result)
+        res["data"] = result
+        if not result:
+            res["status"] = "success"
+            res["message"] = "No result found"
+        else:
+            res["status"] = "success"
+        return res
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+@app.get("/latest-file/")
+async def latest_file(request: Request,db: cursor = Depends(get_db),quantity:int =10):
+    query = "SELECT hash,course_id,name,uploader,upload_time FROM files ORDER BY upload_time DESC LIMIT %s"
+    db.execute(query, (quantity,))
+    result = [dict((db.description[i][0], value) for i, value in enumerate(row)) for row in db.fetchall()]
+    res = {}
+    res["data"] = result
+
+    for i in result:
+        qurey = "SELECT * FROM courses WHERE uid = %s"
+        db.execute(qurey, (i['course_id'],))
+        course_info = db.fetchone()
+        i['course_name'] = course_info[4]
+        logger.info(course_info)
+    
+    if not result:
+        res["status"] = "success"
+        res["message"] = "No result found"
+    else:
+        res["status"] = "success"
+    return res
