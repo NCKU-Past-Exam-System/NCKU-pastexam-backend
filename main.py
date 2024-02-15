@@ -37,20 +37,34 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.mount("/static", StaticFiles(directory="static"), name="static")
-def token_verify(token:str):
+
+def hasher(course_id:int,teacher:str,year:int,examtype:str,filename:str,username:str):
+    hash_input = f"{course_id}_{teacher}_{year}_{examtype}_{username}_{filename}"
+    return hashlib.sha256(hash_input.encode()).hexdigest()
+def add_new_user(userinfo):
+    db = get_db_connection()
+    db_cursor = db.cursor()
+    query = "INSERT INTO users (user_id, username) VALUES (%s, %s)"
+    db_cursor.execute(query, (userinfo.get('email').split('@')[0], userinfo.get('given_name')))
+    db.commit()
+    return {"status":"success","message":"New user added!"}
+@app.post("/token-verify/")
+def token_verify(token: str = Cookie(None)):
     try: 
         userinfo=id_token.verify_oauth2_token(token, requests.Request(), clientId)
     except Exception as e:
         return {"status":"error","message":str(e)}
-    
+    db = get_db_connection()
+    db_cursor = db.cursor()
+    query = "SELECT * FROM users WHERE user_id = %s"
+    db_cursor.execute(query, (userinfo.get('email').split('@')[0],))
+    result = db_cursor.fetchone()
+    if not result:
+        add_new_user(userinfo)
     if(userinfo.get('hd') != 'gs.ncku.edu.tw'):
         return  {"status":"error","message":"Please use NCKU email to login!"}
-    
     userinfo['status'] = 'success'
     return userinfo
-def hasher(course_id:int,teacher:str,year:int,examtype:str,filename:str,username:str):
-    hash_input = f"{course_id}_{teacher}_{year}_{examtype}_{username}_{filename}"
-    return hashlib.sha256(hash_input.encode()).hexdigest()
 @app.get("/filelist/{course_id:path}")
 def list_all(course_id:int ,db: cursor = Depends(get_db)):
     handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s -"))
